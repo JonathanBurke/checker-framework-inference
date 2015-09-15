@@ -19,8 +19,14 @@ import com.sun.source.tree.Tree;
 import com.sun.source.util.Trees;
 
 /**
- * Default implementation of InferrableChecker.
+ * BaseInferrableChecker is the abstract base class that all inference checkers should inherit from.
+ * It extends BaseTypeChecker through InferenceChecker. It differs from BaseTypeChecker in that
+ * it provides the scaffolding for configuring the system between inference/typechecking mode.  In
+ * inference mode, these methods are used by InferenceMain to configure the framework.
+ * In typecheck mode, configuration works like the Checker Framework in general (i.e. the SourceChecker
+ * and BaseTypeChecker configure the system).
  *
+ * See the interface InferrableChecker for descriptions of the methods that are necessary to make inference work.
  */
 public abstract class BaseInferrableChecker extends InferenceChecker implements InferrableChecker {
 
@@ -45,6 +51,12 @@ public abstract class BaseInferrableChecker extends InferenceChecker implements 
         return new InferenceVisitor<>(this, ichecker, factory, infer);
     }
 
+    /**
+     * The "real" type factory is the one that contains the type hierarchy for which we are inferring annotations
+     * (e.g. OsTrustedTypeFactory rather InferenceTypeFactory).  In typechecking mode, the real type factory
+     * is the only type factory created.  In inference mode, the InferenceAnnotatedTypeFactory is primarily
+     * used though it will make calls to the real type factory when needed.
+     */
     @Override
     public BaseAnnotatedTypeFactory createRealTypeFactory() {
         return new BaseAnnotatedTypeFactory(this);

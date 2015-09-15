@@ -20,9 +20,33 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+/**
+ * InferenceLauncher functions as the launch script for the inference framework.
+ InferenceLauncher can be run in 4 modes:
 
+ 1) TYPECHECK: Run an inference checker in typecheck mode without inferring any annotations.
+
+ 2) INFER: Run an inference checker in inference mode.  Inference is run by spawning a new Java process
+ using InferenceMain as the main class. Inference builds a set of constraints, runs a solver
+ (which solves or serializes the previously built constraints), and outputs a JAIF file which can be used
+ to re-insert the solved constraints.
+
+ 3) ROUNDTRIP: Run inference (from mode 2) and then insert solved constraints. While isnertion can be done
+ using a previously output JAIF file and the Annotation File Utilities, the InferenceLauncher will allow you
+ to insert the annotations immediately after inference.
+
+ 4) ROUNDTRIP_TYPECHECK: This first runs all of the steps in ROUNDTRIP mode then runs typechecking
+ over the newly updated code.
+
+ See InferenceOptions for descriptions of the various options that can be passed to InferenceLauncher.
+ */
 public class InferenceLauncher {
 
+    public static void main(String [] args) {
+        new InferenceLauncher(System.out, System.err).launch(args);
+    }
+
+    //used to redirect output when executing processes
     private final PrintStream outStream;
     private final PrintStream errStream;
 
@@ -31,6 +55,10 @@ public class InferenceLauncher {
         this.errStream = errStream;
     }
 
+    /**
+     * Parses and validates the input arguments using InferenceOptions then executes the appropriate
+     * phases for the various launch modes.
+     */
     public void launch(String [] args) {
         InitStatus initStatus = InferenceOptions.init(args, true);
         initStatus.validateOrExit();
@@ -81,10 +109,9 @@ public class InferenceLauncher {
         ROUNDTRIP_TYPECHECK
     }
 
-    public static void main(String [] args) {
-        new InferenceLauncher(System.out, System.err).launch(args);
-    }
-
+    /**
+     * Run typechecking on the input java files using the options in InferenceOptions
+     */
     public void typecheck(String [] javaFiles) {
         printStep("Typechecking", outStream);
 
@@ -118,6 +145,9 @@ public class InferenceLauncher {
         exitOnNonZeroStatus(result);
     }
 
+    /**
+     * Run inference using the Java files and options in InferenceOptions.
+     */
     public void infer() {
         printStep("Inferring", outStream);
         final String java = PluginUtil.getJavaCommand(System.getProperty("java.home"), outStream);
@@ -148,9 +178,12 @@ public class InferenceLauncher {
         argList.add(getInferenceCompilationBootclassPath());
         int preJavacOptsSize = argList.size();
         argList.addAll(Arrays.asList(InferenceOptions.javacOptions));
-        removeXmArgs(argList, preJavacOptsSize, argList.size());
 
-        //TODO: NEED TO HANDLE JDK
+        //The options that come after -- are not passed to the Java process that runs
+        //the Checker Framework and therefore should not contain -Xmx or -Xms
+        //TODO: We may be able to remove this call because of the getMemoryArgs method (called above)
+        removeMemoryArgsInRange(argList, preJavacOptsSize, argList.size());
+
         argList.addAll(Arrays.asList(InferenceOptions.javaFiles));
 
         if (InferenceOptions.printCommands) {
@@ -167,7 +200,7 @@ public class InferenceLauncher {
         exitOnNonZeroStatus(result);
     }
 
-    private void removeXmArgs(List<String> argList, int preJavacOptsSize, int postJavacOptsSize) {
+    private void removeMemoryArgsInRange(List<String> argList, int preJavacOptsSize, int postJavacOptsSize) {
         for (int i = preJavacOptsSize; i < argList.size() && i < postJavacOptsSize; /*incremented-below*/) {
             String current = argList.get(i);
             if (current.startsWith("-Xmx") || current.startsWith("-Xms")) {
@@ -178,6 +211,12 @@ public class InferenceLauncher {
         }
     }
 
+    /**
+     * Using the options InferenceOptions.afuOutputDir and InferenceOptions.inPlace,
+     * insert the JAIF output by the infer step into the source code either in place or
+     * copied to InferenceOptions.afuOutputDir.
+     * TODO: Honor InferenceOptions.afuOptions, which is used no where in this method
+     */
     public List<String> insertJaif() {
         List<String> outputJavaFiles = new ArrayList<>(InferenceOptions.javaFiles.length);
 
@@ -244,6 +283,10 @@ public class InferenceLauncher {
         return outputJavaFiles;
     }
 
+    /**
+     * This method scrapes the output of the AFU for new Java file locations which
+     * are later used in typechecking.
+     */
     private static List<File> findWrittenFiles(String output) {
         //This will be brittle; if the AFU Changes it's output string then no files will be found
         final Pattern afuWritePattern = Pattern.compile("^Writing (.*\\.java)$");
@@ -280,6 +323,9 @@ public class InferenceLauncher {
         return jaifFile;
     }
 
+    /**
+     * @return The -Xmx and -Xms arguments that should be used to run the infer process.
+     */
     private static List<String> getMemoryArgs() {
         //this should instead read them from InferenceOptions and fall back to this if they are not present
         //perhaps just find all -J
@@ -296,6 +342,10 @@ public class InferenceLauncher {
         return Arrays.asList(xms, xmx);
     }
 
+    /**
+     * @return the jar files that should be placed on the runtime bootclasspath of the process
+     * that runs inference.
+     */
     public static List<String> getInferenceRuntimeBootJars() {
         final File distDir = InferenceOptions.pathToThisJar.getParentFile();
         String jdkJarName = PluginUtil.getJdkJarName();
@@ -311,13 +361,18 @@ public class InferenceLauncher {
         return filePaths;
     }
 
-    //what's used to run the compiler
+    /**
+     * @return the bootclasspath that should used to run the inference process.
+     */
     public static String getInferenceRuntimeBootclassPath() {
         List<String> filePaths = getInferenceRuntimeBootJars();
         return "-Xbootclasspath/p:" + PluginUtil.join(File.pathSeparator, filePaths);
     }
 
-    //what the compiler compiles against
+    /**
+     * @return the bootclasspath that should be compiled against.  Note, javac always compiles
+     * against this bootclasspath AND the runtime bootclasspath of the process running javac.
+     */
     public static String getInferenceCompilationBootclassPath() {
         String jdkJarName = PluginUtil.getJdkJarName();
         final File jdkFile = new File(InferenceOptions.pathToThisJar.getParentFile(), jdkJarName);
